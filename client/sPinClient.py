@@ -20,15 +20,14 @@ class sPinClient:
         self.servers = []
         
         
-    def server_lookup(self):
+    def peer_lookup(self):
         http_conn = http.client.HTTPConnection(CATALOG_SERVER)
         http_conn.request('GET', '/query.json')
         catalog = json.loads(http_conn.getresponse().read())
         
         self.servers = [Server(server['address'], server['port'], server['lastheardfrom']) for server in catalog if 'type' in server and server['type'] == SERVER_TYPE and 'address' in server and 'port' in server and 'lastheardfrom' in server]
         
-        self.servers.sort(reverse=True, key=lambda x: x.lastheardfrom)
-        
+        self.servers.sort(reverse=True, key=lambda x: x.lastheardfrom)        
         
     def sPinGET(self, key):
         pass
