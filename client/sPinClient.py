@@ -1,15 +1,31 @@
 #!/usr/bin/env python3
-
 # John Sullivan (jsulli28), Jozef Porubcin (jporubci)
-# sPinClient.py
+# sPin
 
-import json
+
+# http.client: to get catalog
+# json: to parse catalog
+# random: to randomize the order of entries in the catalog
+# time: to check if a peer has timed out
+# socket: to connect to a peer
+
 import http.client
+import json
+import random
+import time
+import socket
+
+
+# CATALOG_SERVER: address and port of name server
+# ENTRY_TYPE: personal identifier for distinguishing which entries in the catalog are sPin servers
+# TIMEOUT: maximum seconds since any given sPin peer last communicated with the name server before the sPin peer is considered dead
 
 CATALOG_SERVER = 'catalog.cse.nd.edu:9097'
-SERVER_TYPE = 'sPin'
+ENTRY_TYPE = 'sPin'
+TIMEOUT = 60
 
-class Server:
+
+class sPinPeer:
     def __init__(self, address, port, lastheardfrom):
         self.address = address
         self.port = port
@@ -17,17 +33,70 @@ class Server:
 
 class sPinClient:
     def __init__(self):
-        self.servers = []
+        # TCP socket
+        self.s = None
         
         
-    def peer_lookup(self):
+    # Connects self's socket to a live sPin peer
+    def _lookup_peer(self):
+        
+        # Get catalog
         http_conn = http.client.HTTPConnection(CATALOG_SERVER)
         http_conn.request('GET', '/query.json')
+        
+        # Parse catalog
         catalog = json.loads(http_conn.getresponse().read())
         
-        self.servers = [Server(server['address'], server['port'], server['lastheardfrom']) for server in catalog if 'type' in server and server['type'] == SERVER_TYPE and 'address' in server and 'port' in server and 'lastheardfrom' in server]
+        # Shuffle catalog
+        random.shuffle(catalog)
         
-        self.servers.sort(reverse=True, key=lambda x: x.lastheardfrom)        
+        # Iterate through catalog
+        for entry in catalog:
+            
+            # If the entry dict has the necessary keys
+            if all(key in entry for key in ('type', 'address', 'port', 'lastheardfrom')):
+                
+                # If the entry is a live sPin peer
+                if entry['type'] == ENTRY_TYPE and entry['lastheardfrom'] >= time.time_ns() / 1000000000.0 - TIMEOUT:
+                    
+                    # Try to connect to the peer
+                    try:
+                        self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        self.s.connect((entry['address'], entry['port']))
+                    except:
+                        self.s.close()
         
+        print('Failed to connect to a live peer')
+        
+        
+    # Adds a file to the network
+    def sPinADD(self, filepath):
+        
+        self._lookup_peer()
+        if self.s == None:
+            return
+        
+        # HTTP POST to peer
+        pass
+        
+        
+    # Gets the file associated with the given key
     def sPinGET(self, key):
+        
+        self._lookup_peer()
+        if self.s == None:
+            return
+        
+        # HTTP GET to peer
+        pass
+        
+        
+    # Requests deletion of the file associated with the given key
+    def sPinDEL(self, key):
+        
+        self._lookup_peer()
+        if self.s == None:
+            return
+        
+        # HTTP POST to peer
         pass
