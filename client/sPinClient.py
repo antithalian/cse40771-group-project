@@ -8,12 +8,16 @@
 # random: to randomize the order of entries in the catalog
 # time: to check if a peer has timed out
 # socket: to connect to a peer
+# uuid: to uniquely identify copies of a file across time
+# os: to get size of file for sending file as a message using TCP
 
 import http.client
 import json
 import random
 import time
 import socket
+import uuid
+import os
 
 
 # CATALOG_SERVER: address and port of name server
@@ -74,10 +78,34 @@ class sPinClient:
         
         self._lookup_peer()
         if self.s == None:
-            return
+            pass
         
         # HTTP POST to peer
-        pass
+        try:
+            f = open(filepath, 'r')
+        except:
+            print('Failed to open file: ' + filepath)
+            return
+        
+        # Send message
+        # TODO: If the file is too large, could there be a memory error?
+        
+        #print((60 + os.path.getsize(filepath)).to_bytes(8, 'little') + json.dumps({'uuid': str(uuid.uuid4()), 'data': f.read()}).encode())
+        self.s.sendall((60 + os.path.getsize(filepath)).to_bytes(8, 'little') + json.dumps({'uuid': str(uuid.uuid4()), 'data': f.read()}).encode())
+        
+        f.close()
+        '''
+        message_buffer = dict()
+        message_buffer['uuid'] = str(uuid.uuid4())
+        message_buffer['data'] = f.read()
+        f.close()
+        
+        message = json.dumps(message_buffer).encode()
+        message_size = len(message).to_bytes(8, 'little')
+        
+        # Send message
+        self.s.sendall(message_size + message)
+        '''
         
         
     # Gets the file associated with the given key
