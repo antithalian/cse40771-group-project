@@ -6,4 +6,4 @@
 from client import sPinClient
 
 client = sPinClient.sPinClient()
-client.sPinADD('hello.txt')
+client.sPinADD('files/hello.txt')
