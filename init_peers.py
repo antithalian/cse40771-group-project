@@ -7,12 +7,12 @@ import shutil
 import os
 import sys
 
-# Initializes peered server directory structure atomically
+# Initializes peered server directory structure
 def init_peers(name, n):
-    shutil.rmtree('.' + name + '/', ignoreerrors=True)
+    shutil.rmtree(name + '/', ignore_errors=True)
     
-    os.mkdir('.' + name + '/')
-    os.chdir('.' + name + '/')
+    os.mkdir(name + '/')
+    os.chdir(name + '/')
     for i in range(n):
         os.mkdir(name + str(i) + '/')
         os.chdir(name + str(i) + '/')
@@ -24,11 +24,7 @@ def init_peers(name, n):
         os.mkdir('checkpoints/')
         os.chdir('../')
         os.chdir('../')
-    os.chdir('../')
-    
-    # La Grande Finale
-    os.rename('.' + name + '/', name + '/')
     
     
-if sys.argc == 3:
+if len(sys.argv) == 3:
     init_peers(sys.argv[1], int(sys.argv[2]))
