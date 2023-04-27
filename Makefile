@@ -6,3 +6,6 @@ init_files:
 
 init_peers:
 	python3 init/make_all.py $@
+
+clean:
+	rm -rf files/ peers/
