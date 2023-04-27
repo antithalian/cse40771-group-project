@@ -5,17 +5,16 @@
 
 import shutil
 import os
-import sys
 
 # Initializes peered server directory structure
-def init_peers(name, n):
-    shutil.rmtree(name + '/', ignore_errors=True)
+def init_peers(peers_dir, num_peers):
+    shutil.rmtree(peers_dir + '/', ignore_errors=True)
     
-    os.mkdir(name + '/')
-    os.chdir(name + '/')
-    for i in range(n):
-        os.mkdir(name + str(i) + '/')
-        os.chdir(name + str(i) + '/')
+    os.mkdir(peers_dir + '/')
+    os.chdir(peers_dir + '/')
+    for i in range(num_peers):
+        os.mkdir(peers_dir + str(i) + '/')
+        os.chdir(peers_dir + str(i) + '/')
         os.mkdir('pins/')
         os.mkdir('cache/')
         os.mkdir('meta/')
@@ -24,7 +23,3 @@ def init_peers(name, n):
         os.mkdir('checkpoints/')
         os.chdir('../')
         os.chdir('../')
-    
-    
-if len(sys.argv) == 3:
-    init_peers(sys.argv[1], int(sys.argv[2]))
