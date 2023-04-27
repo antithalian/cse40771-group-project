@@ -5,6 +5,7 @@
 
 import shutil
 import os
+import sys
 
 # Initializes peered server directory structure atomically
 def init_peers(name, n):
@@ -27,3 +28,7 @@ def init_peers(name, n):
     
     # La Grande Finale
     os.rename('.' + name + '/', name + '/')
+    
+    
+if sys.argc == 3:
+    init_peers(sys.argv[1], int(sys.argv[2]))
