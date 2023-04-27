@@ -4,7 +4,6 @@
 # make_all.py
 
 import sys
-import os
 import init_files, init_peers
 
 files_dir = 'files'
