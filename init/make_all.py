@@ -19,4 +19,4 @@ elif len(sys.argv) == 2 and sys.argv[1] == 'init_files':
     init_files.init_files(files_dir)
 
 elif len(sys.argv) == 2 and sys.argv[1] == 'init_peers':
-    init_files.init_peers(peers_dir, peer_name, num_peers)
+    init_peers.init_peers(peers_dir, peer_name, num_peers)
