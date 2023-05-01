@@ -17,6 +17,7 @@ import random
 import time
 import socket
 import uuid
+import math
 import os
 
 
@@ -27,6 +28,7 @@ import os
 CATALOG_SERVER = 'catalog.cse.nd.edu:9097'
 ENTRY_TYPE = 'sPin'
 TIMEOUT = 60
+K_DENOM = 3 # denominator for determining k
 
 
 class sPinPeer:
@@ -86,13 +88,25 @@ class sPinClient:
         if self.s == None:
             return
         
+        peers = self.get_peers()
+        
+        # figure out k
+        k = math.ceil(len(peers) / K_DENOM)
+
+        # figure out which peers to pin to
+        pin_to = random.choices(peers, k)
+        
         try:
-            f = open(filepath, 'r')
+            f = open(filepath, 'rb')
         except:
             print('Failed to open file: ' + filepath)
             return
         
-        # HTTP POST to peer
+        # HTTP POST to all peers
+        async for peer in pin_to:
+            pass
+
+        #
         http_conn = http.client.HTTPConnection(self.addr + ':' + str(self.port))
         http_conn.request('POST', '/' + str(uuid.uuid4()), f)
         f.close()
