@@ -30,91 +30,58 @@ import sys
 
 CATALOG_SERVER = 'catalog.cse.nd.edu:9097'
 ENTRY_TYPE = 'sPin'
-TIMEOUT = 60
+CLIENT_STALENESS = 60 # client should assume nameserver record is stale if older than 1m
+RETRIES = 3 # retry 3x for things like not being able to hear from the catalog server, etc
 K_DENOM = 3 # denominator for determining k
 
-
-class sPinPeer:
-    def __init__(self, address, port, lastheardfrom):
-        self.address = address
-        self.port = port
-        self.lastheardfrom = lastheardfrom
-
 class sPinClient:
-    def __init__(self, main):
-        self.main = main
-        # TCP socket
-        self.s = None
-        self.addr = None
-        self.port = None
+    def __init__(self, verbose=False):
+        self.verbose = verbose
         
     def get_peers(self):
-        # Get catalog
-        http_conn = http.client.HTTPConnection(CATALOG_SERVER)
-        http_conn.request('GET', '/query.json')
-        
-        # Parse catalog
-        catalog = json.loads(http_conn.getresponse().read())
-        http_conn.close()
+
+        catalog = None
+
+        for _ in range(RETRIES):
+
+            try:
+                resp = requests.get(f'http://{CATALOG_SERVER}/query.json')
+                resp.raise_for_status() # raise an exception is bad response
+
+                # good response, get the JSON
+                catalog = resp.json()
+                break # break the retry loop
+            except Exception as err:
+                if self.verbose: 
+                    print(f'error: could not communicate with nameserver: {err}')
+
+        # return early if getting peers failed
+        if not catalog:
+            return []
 
         # get peers from catalog
         now = time.time()
-        all_peers = [entry for entry in catalog if entry.get('type', '') == ENTRY_TYPE and (now - entry.get('lastheardfrom') < 60)]
+        all_peers = [entry for entry in catalog if entry.get('type', '') == ENTRY_TYPE and (now - entry.get('lastheardfrom') < CLIENT_STALENESS)]
 
+        # deduplicate the peers, keeping only the latest entry for a uuid
         duplicates = {}
         for peer in all_peers:
             if peer['uuid'] in duplicates:
                 duplicates[peer['uuid']].append(peer)
             else:
                 duplicates[peer['uuid']] = [peer]
-
         peers = [max(dupes, key=lambda k: k['lastheardfrom']) for dupes in duplicates.values()]
 
-        return peers
-        
-    # Connects self's socket to a live sPin peer
-    def _lookup_peer(self):
-        
-        # Get catalog
-        http_conn = http.client.HTTPConnection(CATALOG_SERVER)
-        http_conn.request('GET', '/query.json')
-        
-        # Parse catalog
-        catalog = json.loads(http_conn.getresponse().read())
-        http_conn.close()
-        
-        # Shuffle catalog
-        random.shuffle(catalog)
-        
-        # Iterate through catalog
-        for entry in catalog:
-            
-            # If the entry dict has the necessary keys
-            if all(key in entry for key in ('type', 'address', 'port', 'lastheardfrom')):
-                
-                # If the entry is a live sPin peer
-                if entry['type'] == ENTRY_TYPE and entry['lastheardfrom'] >= time.time_ns() / 1000000000.0 - TIMEOUT:
-                    
-                    # Try to connect to the peer
-                    try:
-                        self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        self.s.connect((entry['address'], entry['port']))
-                        self.addr = entry['address']
-                        self.port = entry['port']
-                        return
-                    except:
-                        self.s.close()
-        
-        print('Failed to connect to a live peer')
-        
+        return peers 
         
     # Adds a file to the network
     def sPinADD(self, filepath):
         
         peers = self.get_peers()
         if not len(peers):
-            print('error: no peers found')
-            sys.exit(1)
+            if self.verbose:
+                print('error: no peers found')
+            return False # return early if no peers found
 
         # generate object id
         uuid_component = str(uuid.uuid4())
@@ -127,65 +94,79 @@ class sPinClient:
         # figure out which peers to pin to
         pin_to = random.choices(peers, k=k)
 
-        #print(pin_to)
-
+        # try to pin to all, retrying each as needed
+        overall_success = []
         for peer in pin_to:
-            try:
-                with open(filepath, 'rb') as to_upload:
-                    multipart = {'data': to_upload}                                                                                                                                                                 
-                    resp = requests.post(f'''http://{peer['name']}:{peer['port']}/add/{object_id}''', files=multipart)
-                    print(resp.status_code)
-            except FileNotFoundError as file_err:
-                if self.main: print(f'error: could not open file {filepath}')
-                sys.exit(1)
-            except requests.RequestException as req_err:
-                if self.main: print(f'error: could not connect to peer')
-                sys.exit(1)
-
-        if self.main: print(object_id)
-        return object_id
+            for _ in range(RETRIES):
+                try:
+                    with open(filepath, 'rb') as to_upload:
+                        multipart = {'data': to_upload}                                                                                                                                                                 
+                        resp = requests.post(f'''http://{peer['name']}:{peer['port']}/add/{object_id}''', files=multipart)
+                        resp.raise_for_status() # raise an exception if POST failed
+                        overall_success.append(True)
+                    break # leave this inner loop if we succeeded
+                except FileNotFoundError as file_err:
+                    if self.verbose: 
+                        print(f'error: could not open file {filepath}: {file_err}')
+                    return False
+                except requests.RequestException as req_err:
+                    if self.verbose: 
+                        print(f'error: could not connect to peer: {req_err}')
+        
+        # if all of those succeeded, return object id
+        if all(overall_success):
+            return object_id
+        else:
+            return False
         
     # Gets the file associated with the given key
     def sPinGET(self, object_id, filepath):
-        
+
         peers = self.get_peers()
         if not len(peers):
-            if self.main: print('error: no peers found')
-            sys.exit(1)
+            if self.verbose:
+                print('error: no peers found')
+            return False # return early if no peers found
+
+        # get hash component of object id
+        object_hash = object_id.split(':')[1]
 
         # figure out a few to try
         to_try = random.sample(peers, k=len(peers))
 
         success = False
-
+        # no retries here, we're trying every peer
         for peer in to_try:
-            print(peer)
             try:
-                http_conn = http.client.HTTPConnection(peer['name'], peer['port']) # TODO: add timeout?
-                http_conn.request('GET', f'/get/{object_id}')
-                #resp = requests.get(f'''http://{peer['name']}:{peer['port']}/get/{object_id}''')
-                # TODO error check
-                response = http_conn.getresponse()
-                if response.status == 200:
-                    response_body = response.read()
-                    try:
-                        with open(filepath, 'wb') as to_save:
-                            to_save.write(response_body)
-                    except OSError as file_err:
-                        if self.main: print(f'error: could not open or write to file {filepath}')
-                        sys.exit(1)
+                resp = requests.get(f'''http://{peer['name']}:{peer['port']}/get/{object_id}''')
+                resp.raise_for_status() # raise error if bad result
+
+                # try to write to file
+                # implement a streaming hash check at the same time
+                with open(filename, 'wb') as file:
+                    hash = hashlib.sha256()
+                    for chunk in resp.iter_content(chunk_size=hash.block_size):
+                        hash.update(chunk)
+                        file.write(chunk)
+
+                # check that hashes are same, if not, unlink file
+                if object_hash != hash.hexdigest():
+                    if self.verbose:
+                        print(f'error: retrieved data hash of {hash.hexdigest()} did not match object hash of {object_hash}')
+                    os.unlink(filename)
+                    return False
+                else:
                     success = True
                     break
-                http_conn.close()
-
+            except requests.RequestException as req_err:
+                if self.verbose:
+                    print(f'error: could not retrieve object from peer, trying next if possible')
             except OSError as file_err:
-                if self.main: print(f'error: could not connect to peer, trying next option')
-                
-            except http.client.HTTPException as http_err:
-                if self.main: print(f'error: could not connect to peer, trying next option')
+                if self.verbose: 
+                    print(f'error: could not write to file: {file_err}')
+                return False
 
-        if self.main: print('successfully retrieved file')
-        return 0 if success else 1
+        return success
         
         
     # Requests deletion of the file associated with the given key
@@ -193,8 +174,9 @@ class sPinClient:
         
         peers = self.get_peers()
         if not len(peers):
-            if self.main: print('error: no peers found')
-            sys.exit(1)
+            if self.verbose:
+                print('error: no peers found')
+            return False # return early if no peers found
         
         # figure out k
         k = math.ceil(len(peers) / K_DENOM)
@@ -202,17 +184,20 @@ class sPinClient:
         # figure out which peers to request del from
         del_from = random.choices(peers, k=k)
 
+        # try to delete from all, retrying each as needed
+        success = False
         for peer in del_from:
-            try:
-                http_conn = http.client.HTTPConnection(peer['name'], peer['port']) # TODO: add timeout?
-                http_conn.request('POST', f'/del/{object_id}')
-                # TODO error check
-                http_conn.close()
-            except http.client.HTTPException as http_err:
-                if self.main: print(f'error: could not connect to peer')
-                sys.exit(1)
-
-        if self.main: print('successfully requested file deletion')
+            for _ in range(RETRIES):
+                try:
+                    resp = requests.post(f'''http://{peer['name']}:{peer['port']}/del/{object_id}''')
+                    resp.raise_for_status() # raise an exception if POST failed
+                    overall_success = True
+                    break # leave this inner loop if we succeeded
+                except requests.RequestException as req_err:
+                    if self.verbose: 
+                        print(f'error: could not connect to peer: {req_err}')
+        
+        return overall_success
 
     # helper to get hexdigest of a file
     def get_digest(self, filepath):
@@ -241,7 +226,7 @@ class sPinClient:
 # program del object_id
 if __name__ == '__main__':
 
-    client = sPinClient(True)
+    client = sPinClient(verbose=True)
 
     usage = f'''usage:
         {sys.argv[0]} add <filename> - add contents of <filename> to system, returning object id
@@ -258,6 +243,8 @@ if __name__ == '__main__':
         print(usage)
     else:
 
+        filename, object_id = None, None
+
         # get all arguments into a form we can use
         op = sys.argv[1].lower()
         if op == 'add':
@@ -268,13 +255,36 @@ if __name__ == '__main__':
         if op == 'get':
             filename = sys.argv[3]
 
-        # TODO: sanity check object ids
+        if object_id:
+            try:
+                object_uuid, object_hash = object_id.split(':')
+                assert len(object_hash) == 64
+                assert str(uuid.UUID(object_uuid)) == object_uuid
+            except (ValueError, AssertionError):
+                print(f'invalid object id {object_uuid}')
+
+        exit_code = 0
 
         if op == 'add':
-            client.sPinADD(filename)
+            result = client.sPinADD(filename)
+            if result:
+                print(result) # it's the object id
+            else:
+                print(f'failed to add file {filename}')
+                exit_code = 1
         elif op == 'get':
-            sys.exit(client.sPinGET(object_id, filename))
+            result = client.sPinGET(object_id, filename)
+            if result:
+                print(f'successfully saved {object_id} to {filename}')
+            else:
+                print(f'failed to get object {object_id}')
+                exit_code = 1
         else: # del
-            client.sPinDEL(object_id)
+            result = client.sPinDEL(object_id)
+            if result:
+                print(f'successfully requested deletion of {object_id}')
+            else:
+                print(f'failed to request deletion of object {object_id}')
+                exit_code = 1
 
-        sys.exit(0)
+        sys.exit(exit_code)

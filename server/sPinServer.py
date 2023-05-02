@@ -5,6 +5,7 @@
 
 import asyncio, aiohttp
 from aiohttp import web
+import requests
 import socket # need constants
 import uuid, json, os, time, collections, shutil, random, math
 
@@ -25,7 +26,8 @@ class sPinServer:
     BASE_INTERVAL = 10
     # TODO: add others as multiples of base interval
     MAINTAIN_INTERVAL = 9 * BASE_INTERVAL # 1.5m to let a few broadcast cycles go by
-    STALENESS = 6 * 5 * BASE_INTERVAL # 5m to let several broadcast cycles go by
+    WORLD_STALENESS = 6 * 5 * BASE_INTERVAL # 5m to let several broadcast cycles go by
+    NAMESERVER_STALENESS = 6 * BASE_INTERVAL
 
     # nameserver constants
     NAMESERVER_NAME = 'catalog.cse.nd.edu'
@@ -119,7 +121,7 @@ class sPinServer:
             self.dels = new_dels
             self.del_log_length = len(self.dels)
 
-            print('info: truncated deletes')
+            print('info: log_del: truncated deletes')
 
         try:
             self.del_log.write(object_id + '\n')
@@ -128,7 +130,7 @@ class sPinServer:
             self.del_log_length += 1
             return True
         except OSError:
-            print('error: could not add to deletion log')
+            print('error: log_del: could not add to deletion log')
             return False
         
     # load deletions from disk
@@ -154,6 +156,9 @@ class sPinServer:
     # compress checkpoint if needed
     def log_pins(self, type, object_id):
 
+        # lowercase type
+        type = type.lower()
+
         log_location = f'{self.META_DIR}/{self.PIN_TRANS_BASE}.{self.LOG_EXTENSION}'
         ckpt_location = f'{self.META_DIR}/{self.PIN_TRANS_BASE}.{self.CKPT_EXTENSION}'
 
@@ -172,7 +177,7 @@ class sPinServer:
             self.pin_log.seek(0)
             self.pin_log_length = 0
 
-            print('info: compressed pin log to checkpoint')
+            print('info: log_pins: compressed pin log to checkpoint')
 
         if type == 'add':
             log_line = f'ADD:{object_id}\n'
@@ -186,7 +191,7 @@ class sPinServer:
             self.pin_log_length += 1
             return True
         except OSError:
-            print('error: could not add to pin log')
+            print('error: log_pins: could not add to pin log')
             return False
         
     # load pins from checkpoint and log
@@ -302,23 +307,11 @@ class sPinServer:
 
         # keep going forever
         while True:
-            """# send message to the nameserver
-            # TODO: try/except??? - can't find the exception we'd need to catch... don't want to just catch everything, that'd grab CTRL-C and stuff
-            _, write = await asyncio.open_connection(self.NAMESERVER_NAME, self.NAMESERVER_PORT, family=socket.AF_INET, proto=socket.SOCK_DGRAM)
+
+            print('info: update_nameserver: heartbeat to nameserver')
 
             if self.DBG: pprint.pprint(msg)
 
-            write.write(msg_encoded)
-            await write.drain()
-
-            write.close()
-            await write.wait_closed()"""
-
-            print('info: updating nameserver about self')
-
-            if self.DBG: pprint.pprint(msg)
-
-            # TODO: consider using the above async/await form of this... possibly unnecessary since it's a single, quick connection
             # send message, context handler to close
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
                 # avoid setup, use sendto
@@ -332,7 +325,7 @@ class sPinServer:
         # keep going forever
         while True:
 
-            print('info: retrieving peers from nameserver')
+            print('info: retrieve_peers: refreshing peer info from nameserver')
 
             # async retrieval of the JSON
             async with aiohttp.ClientSession() as session:
@@ -341,21 +334,26 @@ class sPinServer:
                     nameserver_json = await resp.json(content_type=None) # disable content type check, nameserver gives text even though it's json
 
             # find our project in nameserver json response
-            # TODO: fix the fact that this will currently find a crapload of stuff if there's been a lot of churn at the nameserver recently
-            #self.peers = [entry for entry in nameserver_json if entry.get('type', '') == self.NAMESERVER_TYPE and entry.get('uuid') != self.ID]
             now = time.time()
-            all_peers = [entry for entry in nameserver_json if entry.get('type', '') == self.NAMESERVER_TYPE and entry.get('uuid') != self.name and (now - entry.get('lastheardfrom') < 300)]
+            all_peers = [
+                entry for entry in nameserver_json 
+                if entry.get('type', '') == self.NAMESERVER_TYPE # correct type
+                    and entry.get('uuid') != self.name # not this peer's name
+                    and (now - entry.get('lastheardfrom') < self.NAMESERVER_STALENESS) # not a stale record on the nameserver
+                ]
 
             if self.DBG: pprint.pprint(all_peers)
 
+            # deduplicate records from the nameserver
             duplicates = {}
             for peer in all_peers:
                 if peer['uuid'] in duplicates:
                     duplicates[peer['uuid']].append(peer)
                 else:
                     duplicates[peer['uuid']] = [peer]
-
             dedup = [max(dupes, key=lambda k: k['lastheardfrom']) for dupes in duplicates.values()]
+
+            # set peers
             self.peers = {record['uuid'] : record for record in dedup}
                 
             if self.DBG:     
@@ -363,7 +361,7 @@ class sPinServer:
                 pprint.pprint(self.peers)
 
             # broadcast to all peers
-            await self.broadcast(list(self.peers.values()))
+            await self.broadcast(self.peers)
 
             # wait the required amount of time
             await asyncio.sleep(self.NAMESERVER_WAIT)
@@ -377,18 +375,18 @@ class sPinServer:
         # keep going forever
         while True:
 
-            print('info: maintenance running')
+            print('info: maintain: beginning maintenance')
 
             # remove anything too old from worldview
             now = time.time()
             new_world = collections.defaultdict(list)
             for obj, known_pins in self.world.items():
-                non_stale = [pin for pin in known_pins if (now - pin['lastheardfrom'] < self.STALENESS)]
+                non_stale = [pin for pin in known_pins if (now - pin['lastheardfrom'] < self.WORLD_STALENESS)]
                 new_world[obj] = non_stale
 
             self.world = new_world
 
-            print('info: maintenance updated worldview')
+            print('info: maintain: updated worldview')
 
             # calculate k
             k = math.ceil(len(self.peers) / self.K_DENOM)
@@ -408,7 +406,7 @@ class sPinServer:
                             node = self.peers[to_drop]
                             #pprint.pprint(self.peers)
                             name = f'''{node['name']}:{node['port']}'''
-                            print(f'info: maintenance instructing {name} to drop {obj}')
+                            print(f'info: maintain: instructing {name} to drop {obj}')
                             await self.notify_drop(name, obj)
 
                     if count < k:
@@ -417,38 +415,80 @@ class sPinServer:
                             node = self.peers[to_add]
                             #pprint.pprint(self.peers)
                             name = f'''{node['name']}:{node['port']}'''
-                            print(f'info: maintenance instructing {name} to pin {obj}')
+                            print(f'info: maintain: instructing {name} to pin {obj}')
                             await self.notify_pin(name, obj)
 
-            print('info: maintenance verified pin counts')
+            print('info: maintain: verified pin counts')
 
             # delete oldest files in cache if too large
-            # TODO: just gonna let this be for now... hopefullly it won't get too big
-            #if True:
-            #    print('info: maintenance cleaned excess cache')
+            self.clean_cache()
+            print('info: maintain: checked and cleaned cache as needed')
 
             # wait the required amount of time
             await asyncio.sleep(self.MAINTAIN_INTERVAL)
 
+    # clean out oldest cache files until size is correct
+    def clean_cache(self):
+
+        # get cached files, then stat them
+        cached_files = os.listdir(self.CACHE_DIR)
+        cached_stats = [os.stat(f'{self.CACHE_DIR}/{filename}') for filename in cached_files]
+
+        # get total size of cache
+        cache_size = sum([s.st_size for s in cached_stats])
+
+        # bail early if cache is okay
+        if cache_size < self.MAX_CACHE_SIZE:
+            return
+        
+        # sort cache by oldest, figure out n oldest to remove to be at half of max size
+        target = self.MAX_CACHE_SIZE / 2
+        cache_combined = {filename: stat for filename, stat in zip(cached_files, cached_stats)}
+        cache_sorted = dict(sorted(cache_combined.items(), key=lambda k: k[1].st_mtime, reverse=True))
+        size_so_far = 0
+        to_delete = []
+        for filename, stat_result in cache_sorted.items():
+            if size_so_far > target:
+                break
+            size_so_far += stat_result.st_size
+            to_delete.append(filename)
+
+        # delete them
+        for file in to_delete:
+            try:
+                if self.cache.get(file): del self.cache[file]
+                os.unlink(f'{self.CACHE_DIR}/{file}')
+                print(f'info: clean_cache: removed {file} from cache')
+            except OSError:
+                print(f'error: clean_cache: failed to remove {file} from cache')
+
     # broadcast information to other peers
     async def broadcast(self, peers):
+
+        print(f'info: broadcast: broadcasting pins to peers')
 
         # prep pins for sending
         payload = [{'object': obj, 'node': self.name} for obj in self.pins]
 
-        for peer in peers:
+        for peer_name, peer_info in peers.items():
+
+            # set up host string to reduce bugs
+            host = f"{peer_info['name']}:{peer_info['port']}"
 
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-                print(f'''info: posting information to http://{peer['name']}:{peer['port']}/info:''')
+                
+                print(f'info: broadcast: posting pins to {peer_name} @ {host}')
 
                 if self.DBG: pprint.pprint(self.pins)
 
                 try:
-                    await session.post(f'''http://{peer['name']}:{peer['port']}/info''', json=payload)
-                    print(f'''info: posting information to http://{peer['name']}:{peer['port']}/info succeeded''')
-                except:
-                    # TODO: differentiate more?
-                    print(f'''info: posting information to http://{peer['name']}:{peer['port']}/info failed: peer likely unavailable''')
+                    async with session.post(f'''http://{host}/info''', json=payload) as resp:
+                        if resp.status == 200:
+                            print(f'info: broadcast: successfully posted pins to {peer_name} @ {host}')
+                        else:
+                            print(f'info: broadcast: failed posting pins to {peer_name} @ {host}: {resp.status} - {resp.reason}')
+                except aiohttp.ClientError as client_err:
+                    print(f'info: broadcast: failed posting pins to {peer_name} @ {host}: {client_err}')
 
     # ADD operation
     async def add_handler(self, request):
@@ -456,7 +496,7 @@ class sPinServer:
 
         hash = identifier.split(':')[1]
 
-        print(f'receiving file from client with identifier of {identifier}')
+        print(f'info: add: receiving object from client: {identifier}')
 
         write_success = False
         recv_success = False
@@ -485,9 +525,9 @@ class sPinServer:
 
         if write_success and recv_success:
             return web.Response()
-        elif not recv_success:
+        elif not recv_success: # failed to receive data because of something with the POST
             return web.Response(status=400)
-        else: # failed receive data
+        else: # failed to write data
             return web.Response(status=500)
 
     # INFO operation
@@ -496,7 +536,8 @@ class sPinServer:
         recv_time = time.time()
         payload = await request.json()
 
-        print(f'''info: receiving information from peer''')
+        print(f'info: info: received pins from peer')
+
         if self.DBG:
             print(f'full payload:')
             pprint.pprint(payload)
@@ -516,31 +557,32 @@ class sPinServer:
     async def del_handler(self, request):
         identifier = request.match_info['identifier']
 
-        # DROP requests from others will have a body, others won't
+        hash = identifier.split(':')[1]
+
+        # DROP requests from peers will have a body, others won't
         # kinda hacky but
-        if request.body_exists:
+        if request.body_exists and (await request.text()) == 'drop':
             drop = True
         else:
             drop = False
+        type = 'drop' if drop else 'deletion'
 
-        print(f'servicing deletion request for object id: {identifier}')
+        print(f'info: del: received {type} request for {identifier}')
 
         # add to dels
-        # TODO: CHECKPOINT
         if not drop and identifier not in self.dels: 
+            self.log_del(identifier)
             self.dels.append(identifier)
 
         # delete from pins and cache
-        try:
+        # only do it if it actually exists though
+        if self.pins.get(identifier):
             self.log_pins('DEL', identifier)
             del self.pins[identifier]
-        except KeyError:
-            pass
+
         if not drop:
-            try:
-                del self.cache[identifier]
-            except KeyError:
-                pass
+            if self.cache.get(hash):
+                del self.cache[hash]
 
         # delete file if no other pins refer to it
         hash = identifier.split(':')[1]
@@ -548,18 +590,13 @@ class sPinServer:
             try:
                 os.remove(f'{self.PIN_DIR}/{hash}')
             except FileNotFoundError:
-                pass
+                print(f'info: del: {identifier} not found to delete from pins')
+        # delete file if was cached but now shouldn't be
         if not drop and hash not in self.cache.values():
             try:
                 os.remove(f'{self.CACHE_DIR}/{hash}')
             except FileNotFoundError:
-                pass
-
-        # notify others if needed
-        #if not drop and self.world.get(identifier):
-        #    for node in self.world[identifier]:
-        #        address = f'''{self.peers[node['node']]['name']}:{self.peers[node['node']]['port']}'''
-        #        await self.notify_deletion(address, identifier)
+                print(f'info: del: {identifier} not found to delete from cache')
 
         return web.Response()
 
@@ -570,30 +607,56 @@ class sPinServer:
 
         hash = identifier.split(':')[1]
 
+        # GET requests from peers will have a body, others won't
+        # kinda hacky but
+        if request.body_exists and (await request.text()) == 'peer':
+            peer = True
+        else:
+            peer = False
+        who = 'client' if not peer else 'peer'
+
+        print(f'info: get: received request for {identifier}')
+
         if self.pins.get(identifier):
-            print(f'providing client with file with identifier of {identifier}')
+            print(f'info: get: {identifier} is pinned, providing to {who}')
             return web.FileResponse(f'{self.PIN_DIR}/{hash}')
-        elif self.world.get(identifier):
-            print(f'getting file with identifier of {identifier}')
+        elif self.cache.get(hash):
+            print(f'info: get: {identifier} is cached, providing to {who}')
+            return web.FileResponse(f'{self.CACHE_DIR}/{hash}')
+        elif not peer and self.world.get(identifier): # only go looking if the request is from a client
+            print(f'info: get: {identifier} is known, retrieving for {who}')
             
-            # pick a peer to get from
-            node = random.choice(self.world[identifier])
+            # shuffle options to try
+            # node = random.choice(self.world[identifier])
+            nodes = random.sample(self.world[identifier], k=len(self.world[identifier]))
 
-            # TODO: retry
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(f'http://{node}/get/{identifier}') as response:
-                        data = await response.read()
+            for node in nodes:
 
-                        # write to cache
-                        with open(f'{self.CACHE_DIR}/{hash}', 'wb') as file:
-                            file.write(data)
-                            file.flush()
-                            os.fsync(file.fileno())
+                # get host for node
+                node_name = node['node']
+                host = f"{self.peers[node_name]['name']}:{self.peers[node_name]['port']}"
 
-                        return web.FileResponse(f'{self.CACHE_DIR}/{hash}')
-            except:
-                web.Response(status=404)
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(f'http://{host}/get/{identifier}', data='peer') as response:
+                            data = await response.read()
+
+                            # write to cache
+                            with open(f'{self.CACHE_DIR}/{hash}', 'wb') as file:
+                                file.write(data)
+                                file.flush()
+                                os.fsync(file.fileno())
+
+                            # add to cache
+                            self.cache[hash] = hash
+
+                            print(f'info: get: retrieved and cached {identifier} from {node_name} @ {host}, providing to {who}')
+                            return web.FileResponse(f'{self.CACHE_DIR}/{hash}')
+                except aiohttp.ClientError:
+                    print(f'info: get: failed retrieving {identifier} from {node_name} @ {host}')
+                    continue
+
+            web.Response(status=404)
         else:
             return web.Response(status=404)
     
@@ -601,38 +664,48 @@ class sPinServer:
     # where node is the name of the node and object is the UUID:HASH combo
     async def notify_deletion(self, node, object):
 
-        async with aiohttp.ClientSession() as session:
-            print(f'''notifying {node} that {object} has been deleted''')
+        print(f'info: notify_deletion: notifying {node} that a deletion record for {object} exists')
 
-            try:
-                await session.post(f'http://{node}/del/{object}')
-            except:
-                pass # TODO: don't ignore failed? it should be fine because it'll come back around but
+        resp = requests.post(f'http://{node}/del/{object}')
+
+        # error check
+        if resp.status_code == 200:
+            print(f'info: notify_deletion: successfully notified {node} to delete {object}')
+        else:
+            print(f'info: notify_deletion: failed to notify {node} to delete {object}')
 
     # drop notifier
     async def notify_drop(self, node, object):
 
-        async with aiohttp.ClientSession() as session:
-            print(f'''notifying {node} that {object} must be dropped''')
+        print(f'info: notify_drop: notifying {node} that it should drop {object}')
 
-            try:
-                await session.post(f'http://{node}/del/{object}', data='drop')
-            except:
-                pass # TODO: don't ignore failed? it should be fine because it'll come back around but
+        resp = requests.post(f'http://{node}/del/{object}', data='drop') # include marker that this is a drop, not a full delete
+
+        # error check
+        if resp.status_code == 200:
+            print(f'info: notify_drop: successfully notified {node} to drop {object}')
+        else:
+            print(f'info: notify_drop: failed to notify {node} to drop {object}')
 
     # add notifier/uploader
     async def notify_pin(self, node, object):
 
+        print(f'info: notify_pin: notifying {node} that it should pin {object}')
+
         hash = object.split(':')[1]
 
-        async with aiohttp.ClientSession() as session:
-            print(f'''notifying {node} that {object} must be pinned''')
-
-            try:
-                with open(f'{self.PIN_DIR}/{hash}', 'rb') as file:
-                    await session.post(f'http://{node}/add/{object}', data=file)
-            except:
-                pass # TODO: don't ignore failed? it should be fine because it'll come back around but
+        # upload just like a client would
+        try:
+            with open(f'{self.PIN_DIR}/{hash}', 'rb') as file:
+                multipart = {'data': file}
+                resp = requests.post(f'''http://{node}/add/{object}''', files=multipart)
+                resp.raise_for_status() # raise an exception if POST failed
+                # got here, so succeeded
+                print(f'info: notify_pin: successfully notified {node} that it should pin {object}')
+        except FileNotFoundError as file_err:
+            print(f'error: notify_pin: could not open file {self.PIN_DIR}/{hash}: {file_err}')
+        except requests.RequestException as req_err:
+            print(f'error: notify_pin: could not connect to peer: {req_err}')
 
     # server main loop
     async def serve(self):
