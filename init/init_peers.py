@@ -6,6 +6,7 @@
 import shutil
 import os
 import uuid
+import sys
 import json
 
 # Initializes peered server directory structure
@@ -21,6 +22,8 @@ def init_peers(peers_dir, peer_name, num_peers):
         # add server files
         server_files = os.listdir('../../server')
         for file in server_files:
+            if file == '__pycache__':
+                continue
             shutil.copy(os.path.join('../../server/', file), '.')
         os.mkdir('pinned_files/')
         os.mkdir('cached_files/')
@@ -29,10 +32,13 @@ def init_peers(peers_dir, peer_name, num_peers):
         n = open('name', 'x')
         print(peer_name, file=n)
         n.close()
-        c = open('deletes.ckpt', 'x')
-        print(json.dumps(list()), end='', file=c)
-        c.close()
-        l = open('deletes.log', 'x')
-        l.close()
+        #c = open('deletes.ckpt', 'x')
+        #print(json.dumps(list()), end='', file=c)
+        #c.close()
+        #l = open('deletes.log', 'x')
+        #l.close()
         os.chdir('../')
         os.chdir('../')
+
+if __name__ == '__main__':
+    init_peers('peers', 'peer', int(sys.argv[1]))
