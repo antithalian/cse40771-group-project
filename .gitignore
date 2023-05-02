@@ -1,5 +1,7 @@
 # ignore peers dir
 peers
+files
+results
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
