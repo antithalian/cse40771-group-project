@@ -143,7 +143,7 @@ class sPinClient:
 
                 # try to write to file
                 # implement a streaming hash check at the same time
-                with open(filename, 'wb') as file:
+                with open(filepath, 'wb') as file:
                     hash = hashlib.sha256()
                     for chunk in resp.iter_content(chunk_size=hash.block_size):
                         hash.update(chunk)
@@ -153,7 +153,7 @@ class sPinClient:
                 if object_hash != hash.hexdigest():
                     if self.verbose:
                         print(f'error: retrieved data hash of {hash.hexdigest()} did not match object hash of {object_hash}')
-                    os.unlink(filename)
+                    os.unlink(filepath)
                     return False
                 else:
                     success = True
@@ -185,7 +185,7 @@ class sPinClient:
         del_from = random.choices(peers, k=k)
 
         # try to delete from all, retrying each as needed
-        success = False
+        overall_success = False
         for peer in del_from:
             for _ in range(RETRIES):
                 try:

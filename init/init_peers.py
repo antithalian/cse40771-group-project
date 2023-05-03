@@ -41,4 +41,4 @@ def init_peers(peers_dir, peer_name, num_peers):
         os.chdir('../')
 
 if __name__ == '__main__':
-    init_peers('peers', 'peer', int(sys.argv[1]))
+    init_peers('peers', 'peer', int(sys.argv[1]) if len(sys.argv) > 1 else 3)

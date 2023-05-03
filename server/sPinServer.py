@@ -381,7 +381,11 @@ class sPinServer:
             now = time.time()
             new_world = collections.defaultdict(list)
             for obj, known_pins in self.world.items():
-                non_stale = [pin for pin in known_pins if (now - pin['lastheardfrom'] < self.WORLD_STALENESS)]
+                non_stale = [
+                    pin for pin in known_pins 
+                        if (now - pin['lastheardfrom'] < self.WORLD_STALENESS)
+                            and self.peers.get(pin['node'])
+                    ]
                 new_world[obj] = non_stale
 
             self.world = new_world
@@ -402,7 +406,7 @@ class sPinServer:
 
                     if count > k:
                         to_drop = pin_funcs.drop_pin(self.name, pins)
-                        if to_drop and to_drop != self.name:
+                        if to_drop and self.peers.get(to_drop) and to_drop != self.name:
                             node = self.peers[to_drop]
                             #pprint.pprint(self.peers)
                             name = f'''{node['name']}:{node['port']}'''
@@ -411,7 +415,7 @@ class sPinServer:
 
                     if count < k:
                         to_add = pin_funcs.add_pin(self.name, pins, not_pins)
-                        if to_add and to_add != self.name:
+                        if to_add and self.peers.get(to_add) and to_add != self.name:
                             node = self.peers[to_add]
                             #pprint.pprint(self.peers)
                             name = f'''{node['name']}:{node['port']}'''
@@ -487,6 +491,8 @@ class sPinServer:
                             print(f'info: broadcast: successfully posted pins to {peer_name} @ {host}')
                         else:
                             print(f'info: broadcast: failed posting pins to {peer_name} @ {host}: {resp.status} - {resp.reason}')
+                except asyncio.TimeoutError as time_err:
+                    print(f'info: broadcast: time out posting pins to {peer_name} @ {host}: {time_err}')
                 except aiohttp.ClientError as client_err:
                     print(f'info: broadcast: failed posting pins to {peer_name} @ {host}: {client_err}')
 
@@ -505,17 +511,25 @@ class sPinServer:
 
             if field.name == 'data':
                 recv_success = True
-                with open(f'{self.PIN_DIR}/{hash}', 'wb') as file:
-                    while True:
-                        chunk = await field.read_chunk()
-                        if not chunk:
-                            break
-                        file.write(chunk)
+                try:
+                    with open(f'{self.PIN_DIR}/{hash}.{self.TEMP_EXTENSION}', 'wb') as file:
+                        while True:
+                            chunk = await field.read_chunk()
+                            if not chunk:
+                                break
+                            file.write(chunk)
 
-                    # ensure written out
-                    file.flush()
-                    os.fsync(file.fileno())
+                        # ensure written out
+                        file.flush()
+                        os.fsync(file.fileno())
+                    os.rename(f'{self.PIN_DIR}/{hash}.{self.TEMP_EXTENSION}', f'{self.PIN_DIR}/{hash}')
                     write_success = True
+                except OSError as os_err:
+                    print(f'error: add: failed writing {identifier} to disk')
+                    try:
+                        os.unlink(f'{self.PIN_DIR}/{hash}.{self.TEMP_EXTENSION}')
+                    except OSError:
+                        pass # just didn't even manage to create the first thing
             else:
                 continue # skip if not data field
 
@@ -544,7 +558,7 @@ class sPinServer:
         
         for record in payload:
             
-            if record['object'] in self.dels:
+            if record['object'] in self.dels and self.peers.get(record['node']):
                 address = f'''{self.peers[record['node']]['name']}:{self.peers[record['node']]['port']}'''
                 await self.notify_deletion(address, record['object'])
             else:
@@ -642,16 +656,28 @@ class sPinServer:
                             data = await response.read()
 
                             # write to cache
-                            with open(f'{self.CACHE_DIR}/{hash}', 'wb') as file:
-                                file.write(data)
-                                file.flush()
-                                os.fsync(file.fileno())
+                            try:
+                                with open(f'{self.CACHE_DIR}/{hash}.{self.TEMP_EXTENSION}', 'wb') as file:
+                                    file.write(data)
+                                    file.flush()
+                                    os.fsync(file.fileno())
 
-                            # add to cache
-                            self.cache[hash] = hash
+                                # achieve atomic write
+                                os.rename(f'{self.CACHE_DIR}/{hash}.{self.TEMP_EXTENSION}', f'{self.CACHE_DIR}/{hash}')
 
-                            print(f'info: get: retrieved and cached {identifier} from {node_name} @ {host}, providing to {who}')
-                            return web.FileResponse(f'{self.CACHE_DIR}/{hash}')
+                                # add to cache
+                                self.cache[hash] = hash
+
+                                print(f'info: get: retrieved and cached {identifier} from {node_name} @ {host}, providing to {who}')
+                                return web.FileResponse(f'{self.CACHE_DIR}/{hash}')
+                            
+                            except OSError as os_err:
+                                print(f'error: add: failed caching {identifier} to disk')
+                                try:
+                                    os.unlink(f'{self.CACHE_DIR}/{hash}.{self.TEMP_EXTENSION}')
+                                except OSError:
+                                    pass # just didn't even manage to create the first thing
+
                 except aiohttp.ClientError:
                     print(f'info: get: failed retrieving {identifier} from {node_name} @ {host}')
                     continue
@@ -666,26 +692,31 @@ class sPinServer:
 
         print(f'info: notify_deletion: notifying {node} that a deletion record for {object} exists')
 
-        resp = requests.post(f'http://{node}/del/{object}')
-
-        # error check
-        if resp.status_code == 200:
-            print(f'info: notify_deletion: successfully notified {node} to delete {object}')
-        else:
-            print(f'info: notify_deletion: failed to notify {node} to delete {object}')
+        try:
+            resp = requests.post(f'http://{node}/del/{object}')
+            # error check
+            if resp.status_code == 200:
+                print(f'info: notify_deletion: successfully notified {node} to delete {object}')
+            else:
+                print(f'info: notify_deletion: failed to notify {node} to delete {object}')
+        except requests.RequestException as req_err:
+            print(f'error: notify_deletion: could not notify: {req_err}')
 
     # drop notifier
     async def notify_drop(self, node, object):
 
         print(f'info: notify_drop: notifying {node} that it should drop {object}')
 
-        resp = requests.post(f'http://{node}/del/{object}', data='drop') # include marker that this is a drop, not a full delete
-
-        # error check
-        if resp.status_code == 200:
-            print(f'info: notify_drop: successfully notified {node} to drop {object}')
-        else:
-            print(f'info: notify_drop: failed to notify {node} to drop {object}')
+        try:
+            resp = requests.post(f'http://{node}/del/{object}', data='drop') # include marker that this is a drop, not a full delete
+            # error check
+            if resp.status_code == 200:
+                print(f'info: notify_drop: successfully notified {node} to drop {object}')
+            else:
+                print(f'info: notify_drop: failed to notify {node} to drop {object}')
+        except requests.RequestException as req_err:
+            print(f'error: notify_drop: could not notify: {req_err}')
+            return
 
     # add notifier/uploader
     async def notify_pin(self, node, object):
