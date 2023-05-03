@@ -8,6 +8,7 @@ from aiohttp import web
 import requests
 import socket # need constants
 import uuid, json, os, time, collections, shutil, random, math
+import copy
 
 import sys
 import pprint # for debug
@@ -395,8 +396,11 @@ class sPinServer:
             # calculate k
             k = math.ceil(len(self.peers) / self.K_DENOM)
 
+            # deep copy world
+            local_world = copy.deepcopy(self.world)
+
             # check for too many or too few pins
-            for obj, known_pins in self.world.items():
+            for obj, known_pins in local_world.items():
 
                 if self.pins.get(obj):
                     count = len(known_pins)
@@ -692,31 +696,39 @@ class sPinServer:
 
         print(f'info: notify_deletion: notifying {node} that a deletion record for {object} exists')
 
-        try:
-            resp = requests.post(f'http://{node}/del/{object}')
-            # error check
-            if resp.status_code == 200:
-                print(f'info: notify_deletion: successfully notified {node} to delete {object}')
-            else:
-                print(f'info: notify_deletion: failed to notify {node} to delete {object}')
-        except requests.RequestException as req_err:
-            print(f'error: notify_deletion: could not notify: {req_err}')
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+
+            try:
+                async with session.post(f'http://{node}/del/{object}') as resp:
+                    # error check
+                    if resp.status == 200:
+                        print(f'info: notify_deletion: successfully notified {node} to delete {object}')
+                    else:
+                        print(f'info: notify_deletion: failed to notify {node} to delete {object}')
+            except asyncio.TimeoutError as time_err:
+                    print(f'info: notify_deletion: time out notifying {node}')
+            except aiohttp.ClientError as req_err:
+                print(f'error: notify_deletion: could not notify: {req_err}')
 
     # drop notifier
     async def notify_drop(self, node, object):
 
         print(f'info: notify_drop: notifying {node} that it should drop {object}')
 
-        try:
-            resp = requests.post(f'http://{node}/del/{object}', data='drop') # include marker that this is a drop, not a full delete
-            # error check
-            if resp.status_code == 200:
-                print(f'info: notify_drop: successfully notified {node} to drop {object}')
-            else:
-                print(f'info: notify_drop: failed to notify {node} to drop {object}')
-        except requests.RequestException as req_err:
-            print(f'error: notify_drop: could not notify: {req_err}')
-            return
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+
+            try:
+                async with session.post(f'http://{node}/del/{object}', data='drop') as resp: # include marker that this is a drop, not a full delete
+                    # error check
+                    if resp.status == 200:
+                        print(f'info: notify_drop: successfully notified {node} to drop {object}')
+                    else:
+                        print(f'info: notify_drop: failed to notify {node} to drop {object}')
+            except asyncio.TimeoutError as time_err:
+                    print(f'info: notify_drop: time out notifying {node}')
+            except aiohttp.ClientError as req_err:
+                print(f'error: notify_drop: could not notify: {req_err}')
+
 
     # add notifier/uploader
     async def notify_pin(self, node, object):
@@ -725,18 +737,22 @@ class sPinServer:
 
         hash = object.split(':')[1]
 
-        # upload just like a client would
-        try:
-            with open(f'{self.PIN_DIR}/{hash}', 'rb') as file:
-                multipart = {'data': file}
-                resp = requests.post(f'''http://{node}/add/{object}''', files=multipart)
-                resp.raise_for_status() # raise an exception if POST failed
-                # got here, so succeeded
-                print(f'info: notify_pin: successfully notified {node} that it should pin {object}')
-        except FileNotFoundError as file_err:
-            print(f'error: notify_pin: could not open file {self.PIN_DIR}/{hash}: {file_err}')
-        except requests.RequestException as req_err:
-            print(f'error: notify_pin: could not connect to peer: {req_err}')
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+
+            try:
+                with open(f'{self.PIN_DIR}/{hash}', 'rb') as file:
+                    multipart = {'data': file}
+                    async with session.post(f'''http://{node}/add/{object}''', data=multipart) as resp:
+                        if resp.status == 200:
+                            print(f'info: notify_pin: successfully notified {node} that it should pin {object}')
+                        else:
+                            print(f'info: notify_pin: failed to notify {node} to pin {object}')
+            except FileNotFoundError as file_err:
+                print(f'error: notify_pin: could not open file {self.PIN_DIR}/{hash}: {file_err}')
+            except asyncio.TimeoutError as time_err:
+                    print(f'info: notify_pin: time out notifying {node}')
+            except aiohttp.ClientError as req_err:
+                print(f'error: notify_pin: could not notify: {req_err}')
 
     # server main loop
     async def serve(self):
