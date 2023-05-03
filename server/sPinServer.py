@@ -25,7 +25,6 @@ class sPinServer:
 
     # time constants
     BASE_INTERVAL = 10
-    # TODO: add others as multiples of base interval
     MAINTAIN_INTERVAL = 9 * BASE_INTERVAL # 1.5m to let a few broadcast cycles go by
     WORLD_STALENESS = 6 * 5 * BASE_INTERVAL # 5m to let several broadcast cycles go by
     NAMESERVER_STALENESS = 6 * BASE_INTERVAL
@@ -64,7 +63,6 @@ class sPinServer:
         # $UUID-$HASH table
         # UUID:HASH to HASH table
         self.pins = self.load_pins()
-        # TODO: reconcile pins? i.e. if we don't have a certain file stored in PIN_DIR, remove it from our pins?
 
         # cache table
         # same as pins basically
@@ -74,8 +72,6 @@ class sPinServer:
 
         # deletion table
         # just a list of UUID:HASHes - this makes dropping the back end easier when the size gets too big
-        # TODO: do something more complex so lookups are faster?
-        #TODO: checkpoint load
         self.dels = self.load_dels()
 
         # worldview table
@@ -331,7 +327,6 @@ class sPinServer:
             # async retrieval of the JSON
             async with aiohttp.ClientSession() as session:
                 async with session.get(f'http://{self.NAMESERVER_NAME}:{self.NAMESERVER_PORT}{self.NAMESERVER_URL}') as resp:
-                    # TODO: error check
                     nameserver_json = await resp.json(content_type=None) # disable content type check, nameserver gives text even though it's json
 
             # find our project in nameserver json response
@@ -771,7 +766,7 @@ class sPinServer:
         site = web.TCPSite(runner, host=socket.getfqdn(), port=0, reuse_port=True)
         await site.start()
 
-        # TODO: hacky... is there a way around this?
+        # hacky... is there a way around this?
         self.port = site._server.sockets[0].getsockname()[1]
         self.host = socket.getfqdn()
         print(f'{self.name} @ {self.host}:{self.port}')
