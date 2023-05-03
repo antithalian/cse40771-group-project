@@ -5,7 +5,6 @@
 
 import asyncio, aiohttp
 from aiohttp import web
-import requests
 import socket # need constants
 import uuid, json, os, time, collections, shutil, random, math
 import copy
@@ -13,7 +12,6 @@ import copy
 import sys
 import pprint # for debug
 
-import ckpt
 import pin_funcs
 
 class sPinServer:
