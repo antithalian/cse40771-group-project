@@ -14,3 +14,5 @@ To set up and run our system for testing, we recommend using the following proce
 - enter each peer directory and run `python3 sPinServer.py` (we tested this by using `tmux` to have a number of shells to run the peers in, as our peer server prints output to show what's going on in the system)
   - the peers will quickly begin advertising themselves to the nameserver and communicating with each other
 - use `python3 client/sPinClient.py $ARGS` to proceed with whatever operations on the system that you'd like to run!
+
+Between runs of the peers, it may be helpful to run this command in each peer's directory: `rm meta/dels.log meta/pins.log meta/pins.ckpt; rm pinned_files/*; rm cached_files/*; cp ../../server/sPinServer.py . && python3 sPinServer.py`. Assuming you aren't trying to test what happens when peers come back up with their original data, that will clear everything out and make them act as if they are brand new. This avoids the annoyance of having to exit the peers directory, rerun the peer initialization script, and reenter under a new directory name for each peer you wish to run.
