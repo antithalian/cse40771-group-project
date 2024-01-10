@@ -1,6 +1,6 @@
-# cse40771-group-project
-John Sullivan and Jozef Porubcin
-
+# sPin - CSE 40771 Final Group Project
+#### By John Sullivan and Jozef Porubcin
+    
 In order to run our system, your Python installation must have `aiohttp` and `requests` installed. All remaining required libraries (that aren't dependencies of those two) should already be present with your Python installation. We developed and tested our system using Python 3.9.16.
 
 The main aspects of our system are contained in the `server` and `client` directories:
